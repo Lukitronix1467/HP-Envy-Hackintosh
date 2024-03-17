@@ -127,3 +127,4 @@ mail: disco-dole-0n@icloud.com
 Buy me a Porsche 911 GT3-RS: https://www.paypal.com/donate/?hosted_button_id=ETTK7H8X4PTSJ
 ## License
 Lukitronix1467
+https://chat.openai.com/share/1b385c9f-362f-43ca-ba31-fae8edf67829
