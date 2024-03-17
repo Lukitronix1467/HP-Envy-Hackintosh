@@ -1,0 +1,126 @@
+```cpp
+#include "VoodooI2CSynapticsDevice.hpp"
+
+#define super IOService
+OSDefineMetaClassAndStructors(VoodooI2CSynapticsDevice, IOService);
+
+void VoodooI2CSynapticsDevice::rmi_f11_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data) {
+    int x, y;
+    int z;
+
+    VoodooI2CDigitiserTransducer* transducer = OSDynamicCast(VoodooI2CDigitiserTransducer, transducers->getObject(transducer_id));
+    if(!transducer) {
+        IOLog("%s::%s::Failed to cast transducer f11 for id=%d\n", getName(), name, transducer_id);
+        return;
+    }
+
+    x = (touch_data[0] << 4) | (touch_data[2] & 0x0F);
+    y = (touch_data[1] << 4) | (touch_data[2] >> 4);
+    z = touch_data[4];
+
+    y = max_y - y;
+
+    transducer->id = transducer_id;
+    transducer->secondary_id = transducer_id;
+    transducer->coordinates.x.update(x, timestamp);
+    transducer->coordinates.y.update(y, timestamp);
+    transducer->coordinates.z.update(z, timestamp);
+    transducer->is_valid = finger_state == 0x01;
+    transducer->tip_switch.update(finger_state == 0x01, timestamp);
+}
+
+int VoodooI2CSynapticsDevice::rmi_f11_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t *rmiInput) {
+    int offset;
+    
+    offset = (max_fingers >> 2) + 1;
+    for (int i = 0; i < max_fingers; i++) {
+        int fs_byte_position = i >> 2;
+        int fs_bit_position = (i & 0x3) << 1;
+        int finger_state = (rmiInput[fs_byte_position] >> fs_bit_position) & 0x03;
+        int position = offset + 5 * i;
+        rmi_f11_process_touch(transducers, i, timestamp, finger_state, &rmiInput[position]);
+    }
+    return f11.report_size;
+}
+
+int VoodooI2CSynapticsDevice::rmi_f30_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t irq, uint8_t *rmiInput, int size) {
+    bool value;
+    
+    if (!(irq & f30.irq_mask))
+        return 0;
+    
+    if (size < (int)f30.report_size) {
+        IOLog("%s::%s::Click Button pressed, but the click data is missing\n", getName(), name);
+        return 0;
+    }
+    
+    for (int i = 0; i < gpio_led_count; i++) {
+        if (button_mask & BIT(i)) {
+            value = (rmiInput[i / 8] >> (i & 0x07)) & BIT(0);
+            value = (button_state_mask & BIT(i)) ? !value : value;
+            
+            for(int j = 0; j < max_fingers; j++) {
+                VoodooI2CDigitiserTransducer* transducer = OSDynamicCast(VoodooI2CDigitiserTransducer, transducers->getObject(j));
+                if(!transducer) {
+                    IOLog("%s::%s::Failed to cast transducer f30 for id=%d\n", getName(), name, j);
+                    return 0;
+                }
+                
+                transducer->physical_button.update(value, timestamp);
+            }
+            
+            break;
+        }
+    }
+    return f30.report_size;
+}
+
+void VoodooI2CSynapticsDevice::TrackpadRawInput(uint8_t report[40]) {
+    if (report[0] != RMI_ATTN_REPORT_ID)
+        return;
+    
+    int index = 2;
+    
+    AbsoluteTime timestamp;
+    
+    clock_get_uptime(&timestamp);
+    
+    if (f11.interrupt_base < f30.interrupt_base) {
+        index += rmi_f11_input(transducers, timestamp, &report[index]);
+        rmi_f30_input(transducers, timestamp, report[1], &report[index], sizeof(report) - index);
+    } else {
+        index += rmi_f30_input(transducers, timestamp, report[1], &report[index], sizeof(report) - index);
+        rmi_f11_input(transducers, timestamp, &report[index]);
+    }
+    
+    if (mt_interface) {
+        VoodooI2CMultitouchEvent event;
+        event.transducers = transducers;
+        event.contact_count = transducers->getCount();
+        
+        mt_interface->handleInterruptReport(event, timestamp);
+    }
+}
+
+VoodooI2CSynapticsDevice* VoodooI2CSynapticsDevice::probe(IOService* provider, SInt32*
+
+ score) {
+    VoodooI2CSynapticsDevice* device = OSDynamicCast(VoodooI2CSynapticsDevice, super::probe(provider, score));
+    
+    if (!device)
+        return nullptr;
+    
+    if (!device->matchNubWithProperty("hid", "SYNA2B36") &&
+        !device->matchNubWithProperty("hid", "SYNA2B37")) {
+        OSSafeReleaseNULL(device);
+        return nullptr;
+    }
+    
+    device->name = "Synaptics TouchPad";
+    device->version = 1;
+    device->type = kVoodooI2CSynaptics;
+    device->interrupt_handler = true;
+    
+    return device;
+}
+```
